@@ -123,6 +123,13 @@ export interface TuiStatusViewEntry {
   readonly registrationId: number
 }
 
+/** Full-screen, pointer-transparent background view rendered behind Chat. */
+export interface TuiAmbientViewEntry {
+  readonly key: string
+  readonly component: React.ComponentType<TuiStatusViewProps>
+  readonly registrationId: number
+}
+
 // Colon-separated segments are the documented namespacing convention
 // (`plugin:sub-item`); each segment stays a lowercase slug.
 const KEY_PATTERN = /^[a-z][a-z0-9_-]*(:[a-z][a-z0-9_-]*)*$/u
@@ -142,6 +149,7 @@ export class TuiStatusStore {
   // same status text).
   private readonly entries = new Map<string, { text: string; token: number; owner: object }>()
   private readonly views = new Map<string, { view: TuiStatusViewEntry; token: number; owner: object }>()
+  private readonly ambientViews = new Map<string, { view: TuiAmbientViewEntry; token: number; owner: object }>()
   // useSyncExternalStore requires a referentially stable snapshot between
   // emits — a fresh array per call would re-render in an infinite loop.
   private snapshot: readonly TuiStatusEntry[] = []
@@ -180,6 +188,28 @@ export class TuiStatusStore {
    * stable between mutations for `useSyncExternalStore`. */
   getViewSnapshot(): readonly TuiStatusViewEntry[] {
     return this.viewSnapshot
+  }
+
+  private ambientSnapshot: readonly TuiAmbientViewEntry[] = []
+
+  getAmbientSnapshot(): readonly TuiAmbientViewEntry[] {
+    return this.ambientSnapshot
+  }
+
+  addAmbient(view: TuiAmbientViewEntry, token: number, owner: object): void {
+    this.ambientViews.set(view.key, { view, token, owner })
+    this.ambientSnapshot = [...this.ambientViews.values()].map(entry => entry.view)
+    this.emit()
+  }
+
+  clearAmbientIf(key: string, token: number, owner?: object): boolean {
+    const current = this.ambientViews.get(key)
+    if (owner !== undefined && current?.owner !== owner) return false
+    if (current?.token !== token) return false
+    this.ambientViews.delete(key)
+    this.ambientSnapshot = [...this.ambientViews.values()].map(entry => entry.view)
+    this.emit()
+    return true
   }
 
   /** Host runtime uses this to enforce that one activation cannot rewrite or
@@ -227,11 +257,13 @@ export class TuiStatusStore {
 
   /** Drop everything (teardown). */
   clear(): void {
-    if (this.entries.size === 0 && this.views.size === 0) return
+    if (this.entries.size === 0 && this.views.size === 0 && this.ambientViews.size === 0) return
     this.entries.clear()
     this.views.clear()
     this.snapshot = []
     this.viewSnapshot = []
+    this.ambientViews.clear()
+    this.ambientSnapshot = []
     this.emit()
   }
 
@@ -398,6 +430,35 @@ export class TuiStatusRuntime extends Service {
       identity,
     )
     ledgerApplied = true
+    return dispose
+  }
+
+  /** Register a pointer-transparent full-screen background layer. */
+  registerAmbient(descriptor: { key: string; component: React.ComponentType<TuiStatusViewProps> }, identity?: Context): TuiStatusViewDisposer | undefined {
+    assertCapabilityShadowPolicy('host.status.register-ambient', statusStateFor(this).runtime.mode, statusStateFor(this).runtime.slices)
+    let caller: Context
+    try { caller = requirePluginCaller(this.ctx, 'tuiStatus.registerAmbient', this) } catch {
+      this.ctx.logger.warn('dsh-tui: tuiStatus.registerAmbient requires a live plugin activation')
+      return undefined
+    }
+    if (identity !== undefined) {
+      try { assertCallerContext(caller, identity, 'tuiStatus.registerAmbient') } catch { return undefined }
+    }
+    const owner = activationFiber(caller)
+    if (owner === undefined || typeof descriptor?.component !== 'function') return undefined
+    const key = String(descriptor.key ?? '').trim().toLowerCase()
+    if (!KEY_PATTERN.test(key)) return undefined
+    const state = statusStateFor(this)
+    const token = state.nextToken++
+    const view: TuiAmbientViewEntry = Object.freeze({ key, component: descriptor.component, registrationId: token })
+    state.store.addAmbient(view, token, owner)
+    let disposed = false
+    const dispose = () => {
+      if (disposed) return
+      disposed = true
+      state.store.clearAmbientIf(key, token, owner)
+    }
+    if (!bindCallerEffect(caller, dispose)) return undefined
     return dispose
   }
 

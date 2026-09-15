@@ -381,6 +381,10 @@ export function Chat({
     subscribeStatus,
     () => statusContributions.getViewSnapshot(),
   )
+  const ambientViews = React.useSyncExternalStore(
+    subscribeStatus,
+    () => statusContributions.getAmbientSnapshot(),
+  )
   // Shortcut handler failures surface as toasts (the registry also logs
   // them); the hook is re-pointed on every mount so a stale closure never
   // outlives its channel.
@@ -3729,7 +3733,18 @@ export function Chat({
     : null
 
   return (
-    <Box ref={wakeTickRef} flexDirection="column" flexGrow={1} width="100%">
+    <Box ref={wakeTickRef} flexDirection="column" flexGrow={1} width="100%" position="relative">
+      {ambientViews.map(view => (
+        <PluginStatusViewBoundary
+          key={`${view.key}:${view.registrationId}`}
+          viewKey={view.key}
+          onError={(key, error) => statusContributions.reportViewError(key, error)}
+        >
+          <Box position="absolute" top={0} left={0} width="100%" height="100%" flexShrink={0}>
+            {React.createElement(view.component, { React, ui: STATUS_VIEW_UI })}
+          </Box>
+        </PluginStatusViewBoundary>
+      ))}
       {!isSticky && anchorUserText && (
         <PinnedTurnHeader
           text={anchorUserText}
