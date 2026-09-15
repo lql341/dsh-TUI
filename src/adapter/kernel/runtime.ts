@@ -62,6 +62,7 @@ export const ADAPTER_CAPABILITY_EFFECT_CLASSES: Readonly<Record<string, HostEffe
   'host.settings.subscribe': 'subscribe',
   'host.status.set': 'mutate',
   'host.status.register-view': 'register',
+  'host.status.register-ambient': 'register',
   'host.status.snapshot': 'read-only',
   'host.status.subscribe': 'subscribe',
   'host.renderers.register': 'register',
