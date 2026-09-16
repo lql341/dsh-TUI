@@ -436,6 +436,31 @@ function makeTree(): { root: DOMElement; parent: DOMElement; child: DOMElement }
 }
 
 {
+  const root = createNode('ink-root')
+  const foreground = createNode('ink-box')
+  const ambient = createNode('ink-box')
+  root.childNodes.push(foreground, ambient)
+  foreground.parentNode = root
+  ambient.parentNode = root
+  ambient.style.pointerEvents = 'none'
+  let clicked = false
+  foreground._eventHandlers = { onClick: () => { clicked = true } }
+  nodeCache.set(root, { x: 0, y: 0, width: 40, height: 12 })
+  nodeCache.set(foreground, { x: 0, y: 0, width: 40, height: 12 })
+  nodeCache.set(ambient, { x: 0, y: 0, width: 40, height: 12 })
+  const handled = dispatchClick(root, 4, 2, false)
+  check('pointerEvents none: painted sibling does not swallow foreground click',
+    handled && clicked)
+
+  const ambientChild = createNode('ink-box')
+  ambient.childNodes.push(ambientChild)
+  ambientChild.parentNode = ambient
+  nodeCache.set(ambientChild, { x: 0, y: 0, width: 40, height: 12 })
+  check('pointerEvents none: transparency applies to descendants',
+    hitTest(ambientChild, 4, 2) === null)
+}
+
+{
   const { root, child } = makeTree()
   let wheelEvent: InstanceType<typeof import('../src/ink/events/wheel-event.js').WheelEvent> | undefined
   child._eventHandlers = {

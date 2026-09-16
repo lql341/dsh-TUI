@@ -41,6 +41,11 @@ export function hitTest(
   col: number,
   row: number,
 ): DOMElement | null {
+  // A transparent ancestor fences the entire painted subtree, including
+  // absolute descendants that also appear independently in the overlay list.
+  for (let current: DOMElement | undefined = node; current; current = current.parentNode) {
+    if (current.style.pointerEvents === 'none') return null
+  }
   const rect = nodeCache.get(node)
   if (!rect) return null
   const inside =

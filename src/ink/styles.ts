@@ -62,6 +62,15 @@ export type TextStyles = {
  * All properties are optional; unset ones keep their defaults.
  */
 export type Styles = {
+  /**
+   * Controls whether this element and its descendants participate in pointer
+   * hit-testing. `none` keeps a painted layer transparent to mouse, wheel,
+   * hover, and drag routing.
+   *
+   * @default 'auto'
+   */
+  readonly pointerEvents?: 'auto' | 'none'
+
   readonly textWrap?:
     | 'wrap'
     | 'wrap-trim'

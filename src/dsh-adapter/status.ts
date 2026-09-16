@@ -123,6 +123,13 @@ export interface TuiStatusViewEntry {
   readonly registrationId: number
 }
 
+/** One plugin background layer. The host owns placement, clipping, input
+ * transparency, and teardown; the component only paints terminal cells. */
+export interface TuiAmbientViewDescriptor {
+  readonly key: string
+  readonly component: React.ComponentType<TuiStatusViewProps>
+}
+
 /** Full-screen, pointer-transparent background view rendered behind Chat. */
 export interface TuiAmbientViewEntry {
   readonly key: string
@@ -220,6 +227,10 @@ export class TuiStatusStore {
 
   viewOwnerOf(key: string): object | undefined {
     return this.views.get(key)?.owner
+  }
+
+  ambientOwnerOf(key: string): object | undefined {
+    return this.ambientViews.get(key)?.owner
   }
 
   addView(view: TuiStatusViewEntry, token: number, owner: object): void {
@@ -383,7 +394,7 @@ export class TuiStatusRuntime extends Service {
       }
       cleaned = cleanScalarText(text, TEXT_CELLS)
     }
-    if (cleaned !== undefined && store.viewOwnerOf(normalized) !== undefined) {
+    if (cleaned !== undefined && (store.viewOwnerOf(normalized) !== undefined || store.ambientOwnerOf(normalized) !== undefined)) {
       caller.logger.warn(`dsh-tui: tuiStatus.set rejected "${normalized}" — the key already owns a rich view`)
       return noop
     }
@@ -433,32 +444,96 @@ export class TuiStatusRuntime extends Service {
     return dispose
   }
 
-  /** Register a pointer-transparent full-screen background layer. */
-  registerAmbient(descriptor: { key: string; component: React.ComponentType<TuiStatusViewProps> }, identity?: Context): TuiStatusViewDisposer | undefined {
+  /** Register the single pointer-transparent full-screen background layer. */
+  registerAmbient(descriptor: TuiAmbientViewDescriptor, identity?: Context): TuiStatusViewDisposer | undefined {
     assertCapabilityShadowPolicy('host.status.register-ambient', statusStateFor(this).runtime.mode, statusStateFor(this).runtime.slices)
     let caller: Context
-    try { caller = requirePluginCaller(this.ctx, 'tuiStatus.registerAmbient', this) } catch {
-      this.ctx.logger.warn('dsh-tui: tuiStatus.registerAmbient requires a live plugin activation')
+    try {
+      caller = requirePluginCaller(this.ctx, 'tuiStatus.registerAmbient', this)
+    } catch {
+      this.ctx.logger.warn('dsh-tui: tuiStatus.registerAmbient requires a live non-root plugin activation')
       return undefined
     }
     if (identity !== undefined) {
-      try { assertCallerContext(caller, identity, 'tuiStatus.registerAmbient') } catch { return undefined }
+      try {
+        assertCallerContext(caller, identity, 'tuiStatus.registerAmbient')
+      } catch {
+        caller.logger.warn('dsh-tui: tuiStatus.registerAmbient rejected an identity belonging to another activation')
+        return undefined
+      }
     }
     const owner = activationFiber(caller)
-    if (owner === undefined || typeof descriptor?.component !== 'function') return undefined
-    const key = String(descriptor.key ?? '').trim().toLowerCase()
-    if (!KEY_PATTERN.test(key)) return undefined
+    if (owner === undefined) {
+      caller.logger.warn('dsh-tui: tuiStatus.registerAmbient requires a live activation owner')
+      return undefined
+    }
+    if (typeof descriptor !== 'object' || descriptor === null || Array.isArray(descriptor)) {
+      caller.logger.warn('dsh-tui: tuiStatus.registerAmbient rejected an invalid descriptor')
+      return undefined
+    }
+    const raw = descriptor as unknown as { key?: unknown; component?: unknown }
+    let key: string
+    try {
+      key = String(raw.key ?? '').trim().toLowerCase()
+    } catch {
+      caller.logger.warn('dsh-tui: tuiStatus.registerAmbient rejected an uncoercible key')
+      return undefined
+    }
+    if (!KEY_PATTERN.test(key)) {
+      caller.logger.warn('dsh-tui: tuiStatus.registerAmbient rejected an invalid key')
+      return undefined
+    }
+    if (typeof raw.component !== 'function') {
+      caller.logger.warn(`dsh-tui: tuiStatus.registerAmbient rejected "${key}" — component must be a function`)
+      return undefined
+    }
     const state = statusStateFor(this)
+    const store = state.store
+    if (store.getAmbientSnapshot().length > 0 || store.ownerOf(key) !== undefined || store.viewOwnerOf(key) !== undefined) {
+      caller.logger.warn(`dsh-tui: tuiStatus.registerAmbient rejected "${key}" — an ambient layer or contribution key is already registered`)
+      caller.get('tuiEffectLedger')?.record({
+        operation: 'bind',
+        resource: { kind: 'status', id: key },
+        result: 'failed',
+        errorCode: 'DUPLICATE_CONTRIBUTION_ID',
+      }, identity)
+      return undefined
+    }
     const token = state.nextToken++
-    const view: TuiAmbientViewEntry = Object.freeze({ key, component: descriptor.component, registrationId: token })
-    state.store.addAmbient(view, token, owner)
+    const view: TuiAmbientViewEntry = Object.freeze({
+      key,
+      component: raw.component as React.ComponentType<TuiStatusViewProps>,
+      registrationId: token,
+    })
+    store.addAmbient(view, token, owner)
     let disposed = false
+    let ledgerApplied = false
+    let ownerCleanup: (() => unknown) | undefined
     const dispose = () => {
       if (disposed) return
       disposed = true
-      state.store.clearAmbientIf(key, token, owner)
+      if (store.clearAmbientIf(key, token, owner) && ledgerApplied) {
+        caller.get('tuiEffectLedger')?.record(
+          { operation: 'release', resource: { kind: 'status', id: key }, result: 'applied' },
+          identity,
+        )
+      }
+      const cleanup = ownerCleanup
+      ownerCleanup = undefined
+      cleanup?.()
     }
-    if (!bindCallerEffect(caller, dispose)) return undefined
+    const bound = bindCallerEffect(caller, dispose, cleanup => {
+      ownerCleanup = cleanup
+    })
+    if (!bound) {
+      store.clearAmbientIf(key, token, owner)
+      return undefined
+    }
+    caller.get('tuiEffectLedger')?.record(
+      { operation: 'bind', resource: { kind: 'status', id: key }, result: 'applied' },
+      identity,
+    )
+    ledgerApplied = true
     return dispose
   }
 
@@ -531,7 +606,11 @@ export class TuiStatusRuntime extends Service {
     }
     const state = statusStateFor(this)
     const store = state.store
-    if (store.ownerOf(normalized) !== undefined || store.viewOwnerOf(normalized) !== undefined) {
+    if (
+      store.ownerOf(normalized) !== undefined ||
+      store.viewOwnerOf(normalized) !== undefined ||
+      store.ambientOwnerOf(normalized) !== undefined
+    ) {
       caller.logger.warn(`dsh-tui: tuiStatus.registerView rejected "${normalized}" — the key is already registered`)
       caller.get('tuiEffectLedger')?.record(
         {

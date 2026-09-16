@@ -482,6 +482,48 @@ const plugin = pluginCtx
   check('tuiStatus.registerView: repeated register + dispose keeps caller effects bounded',
     repeatedViewRegistrations && pluginFiber.getEffects().length === viewEffectBaseline,
     `${pluginFiber.getEffects().length} !== ${viewEffectBaseline}`)
+
+  check('tuiStatus.registerAmbient: public method is feature-detectable',
+    typeof plugin.tuiStatus.registerAmbient === 'function')
+  const ambientEffectBaseline = pluginFiber.getEffects().length
+  const disposeAmbient = plugin.tuiStatus.registerAmbient({
+    key: 'demo:ambient',
+    component: EmptyView,
+  })
+  check('tuiStatus.registerAmbient: first layer is admitted',
+    disposeAmbient !== undefined
+    && statusStore.getAmbientSnapshot()[0]?.key === 'demo:ambient')
+  const secondAmbient = plugin.tuiStatus.registerAmbient({
+    key: 'demo:second-ambient',
+    component: EmptyView,
+  })
+  check('tuiStatus.registerAmbient: host admits only one layer',
+    secondAmbient === undefined
+    && statusStore.getAmbientSnapshot().length === 1)
+  plugin.tuiStatus.set('demo:ambient', 'must not duplicate')
+  check('tuiStatus.registerAmbient: shares the contribution key namespace',
+    !statusStore.getSnapshot().some(entry => entry.key === 'demo:ambient'))
+  disposeAmbient?.()
+  check('tuiStatus.registerAmbient: disposer removes layer and owner effect',
+    statusStore.getAmbientSnapshot().length === 0
+    && pluginFiber.getEffects().length === ambientEffectBaseline)
+
+  let repeatedAmbientRegistrations = true
+  for (let i = 0; i < 24; i++) {
+    const dispose = plugin.tuiStatus.registerAmbient({
+      key: 'effect-bounded-ambient',
+      component: EmptyView,
+    })
+    if (dispose === undefined) {
+      repeatedAmbientRegistrations = false
+      break
+    }
+    dispose()
+  }
+  check('tuiStatus.registerAmbient: repeated register + dispose keeps caller effects bounded',
+    repeatedAmbientRegistrations
+    && statusStore.getAmbientSnapshot().length === 0
+    && pluginFiber.getEffects().length === ambientEffectBaseline)
 }
 
 {

@@ -139,6 +139,7 @@ const METHOD_POLICY: Record<string, Record<string, MethodPolicy>> = {
   TuiStatusRuntime: {
     set: { kind: 'capability', capability: 'host.status.set' },
     registerView: { kind: 'capability', capability: 'host.status.register-view' },
+    registerAmbient: { kind: 'capability', capability: 'host.status.register-ambient' },
     subscribe: { kind: 'capability', capability: 'host.status.subscribe' },
   },
   TuiRendererRuntime: {

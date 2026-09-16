@@ -3740,7 +3740,7 @@ export function Chat({
           viewKey={view.key}
           onError={(key, error) => statusContributions.reportViewError(key, error)}
         >
-          <Box position="absolute" top={0} left={0} width="100%" height="100%" flexShrink={0}>
+          <Box position="absolute" top={0} left={0} width="100%" height="100%" flexShrink={0} pointerEvents="none">
             {React.createElement(view.component, { React, ui: STATUS_VIEW_UI })}
           </Box>
         </PluginStatusViewBoundary>
