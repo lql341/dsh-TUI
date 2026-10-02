@@ -68,6 +68,7 @@ const GATES = [
   'verify:liangshen-bootstrap',
   'verify:inject-channel',
   'verify:wheel-selection',
+  'verify:selection-drag-scroll',
   'verify:win32-protocol',
   'verify:selection-resize',
   'verify:selection-stale-guard',

@@ -172,6 +172,7 @@
     "verify:thinking-preview": "node --import tsx/esm scripts/verify-thinking-preview.tsx",
     "verify:streaming-markdown-spacing": "node --import tsx/esm scripts/verify-streaming-markdown-spacing.tsx",
     "verify:wheel-selection": "node --import tsx/esm scripts/verify-wheel-selection.ts",
+    "verify:selection-drag-scroll": "node --import tsx/esm scripts/verify-selection-drag-scroll.tsx",
     "verify:pointer-events": "node --import tsx/esm scripts/verify-pointer-events.ts",
     "verify:terminal-images": "node --import tsx/esm scripts/verify-terminal-images.tsx",
     "verify:overlay-occlusion": "node --import tsx/esm scripts/verify-overlay-occlusion.tsx",

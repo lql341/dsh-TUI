@@ -381,6 +381,33 @@ export function dispatchWheel(
   return true
 }
 
+/**
+ * The nearest node at (col, row) — or one of its ancestors — that carries an
+ * `onWheel` handler: the ScrollBox under the pointer, i.e. the box a wheel
+ * event at that point would scroll. Used by the selection drag-to-scroll
+ * driver (ink.tsx), which needs the box's viewport bounds to decide when the
+ * pointer has reached an edge and which box to keep scrolling after the
+ * pointer leaves it (dragging into the footer).
+ *
+ * @param root - the tree root to hit-test.
+ * @param col - the screen column to test.
+ * @param row - the screen row to test.
+ * @returns the scrollable node, or null when the point reaches no onWheel
+ *   handler.
+ */
+export function findScrollNode(
+  root: DOMElement,
+  col: number,
+  row: number,
+): DOMElement | null {
+  let node: DOMElement | undefined = hitTestWithOverlays(root, col, row) ?? undefined
+  while (node) {
+    if (node._eventHandlers?.onWheel) return node
+    node = node.parentNode
+  }
+  return null
+}
+
 // ── No-interest rect fast path (hover perf) ─────────────────────────
 // When a hover hit confirms that its ancestor chain is inert and the hit is
 // a leaf region with no overlapping interested sibling/absolute layer, that

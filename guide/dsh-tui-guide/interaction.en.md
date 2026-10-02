@@ -495,7 +495,9 @@ In inline mode, the terminal emulator owns native scrollback and selection.
   notch on the timeline, ±1 in hotspot; scrolls the detail while expanded). Walks the
   focused row in /settings.
 - **Drag** — Select text, copy on release, then clear the selection; a "Copied N characters"
-  notice pops up. With `dsh-tui.scrollGutter: scrollbar`, the right-edge scrollbar is a drag
+  notice pops up. Holding the drag at the transcript viewport's top or bottom edge keeps the
+  view auto-scrolling (it stops on release), so a selection can span more than one screen.
+  With `dsh-tui.scrollGutter: scrollbar`, the right-edge scrollbar is a drag
   target: an unmodified left drag scrubs the transcript to the track position (same mapping
   as a track click — drag to point), while `Shift`/`Alt`/`Ctrl`+drag still selects text (the
   drag protocol opens only for unmodified left presses).
@@ -569,7 +571,9 @@ native scrollback and selection stay in charge.
 
 ## `ask_user_question` questionnaires
 
-When the model invokes the questionnaire tool, its panel temporarily owns the keyboard:
+When the model invokes the questionnaire tool, its panel temporarily owns the keyboard. An
+over-long question body or detail folds to its leading rows plus a `… N lines total, M folded`
+marker, so the option rows and the free-form input line always stay visible:
 
 | Key | Behavior |
 | --- | --- |
@@ -615,8 +619,11 @@ in the review panel (the dedicated decision layout for `intent: plan-review`):
 ## Tool approval
 
 When the permission layer issues an `approval/request`, the approval panel shows the tool
-name, the full command extracted from the paired tool call, and the reason. It temporarily
-owns the keyboard (when a questionnaire is also pending, approval takes priority):
+name, the command extracted from the paired tool call, and the reason. On a short viewport
+(or with a long body) the command and reason fold to their leading rows plus a
+`… N lines total, M folded` marker, so the divider, the question and both option rows — the
+decision surface — always stay on screen. It temporarily owns the keyboard (when a
+questionnaire is also pending, approval takes priority):
 
 | Key | Behavior |
 | --- | --- |

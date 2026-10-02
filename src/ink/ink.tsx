@@ -23,7 +23,7 @@ import { KeyboardEvent } from './events/keyboard-event.js';
 import type { DragEvent } from './events/drag-event.js';
 import { FocusManager } from './focus.js';
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js';
-import { dispatchClick, dispatchContextMenu, dispatchDragEvent as bubbleDragEvent, dispatchHover, dispatchWheel, findDragTarget, clearHovered, invalidateNoInterestRect } from './hit-test.js';
+import { dispatchClick, dispatchContextMenu, dispatchDragEvent as bubbleDragEvent, dispatchHover, dispatchWheel, findDragTarget, findScrollNode, clearHovered, invalidateNoInterestRect } from './hit-test.js';
 import { logMouseDebug } from '../utils/debug.js';
 import { noteTerminalFlush } from './flush-tick.js';
 import instances from './instances.js';
@@ -69,6 +69,16 @@ const ERASE_THEN_HOME_PATCH = Object.freeze({
   content: ERASE_SCREEN + CURSOR_HOME
 });
 const TERMINAL_REPLY_QUARANTINE_MS = 120;
+
+/**
+ * Drag-to-scroll tick. While a text selection is being dragged and the
+ * pointer sits at (or past) a transcript viewport edge, this drives one
+ * synthetic wheel row per interval — the same route a real wheel takes, so
+ * the renderer's follow-scroll pass re-anchors the selection by the same
+ * delta (see the consumeFollowScroll block in onRender). 20 rows/s reads as
+ * steady auto-scroll without outrunning the frame budget.
+ */
+const DRAG_SCROLL_INTERVAL_MS = 50;
 
 // Cached per-Ink-instance, invalidated on resize. frame.cursor.y for
 // alt-screen is always terminalRows - 1 (renderer.ts).
@@ -192,6 +202,16 @@ export default class Ink {
   // Fired alongside the terminal repaint whenever the selection mutates
   // so UI (e.g. footer hints) can react to selection appearing/clearing.
   private readonly selectionListeners = new Set<() => void>();
+  // Drag-to-scroll driver (alt-screen selection drag). While the pointer is
+  // held at/past a ScrollBox viewport edge, a repeating timer sends one wheel
+  // row to that box so the content follows the pointer; the renderer's
+  // follow-scroll pass then re-anchors the selection by the same delta, so
+  // the highlight stays on the text while focus tracks the mouse. Cleared on
+  // release/clear/alt-screen exit.
+  private dragScrollTimer: ReturnType<typeof setInterval> | null = null;
+  private dragScrollDir = 0;
+  private dragScrollNode: dom.DOMElement | null = null;
+  private dragScrollPoint = { col: 0, row: 0 };
   // DOM nodes currently under the pointer (mode-1003 motion). Held here
   // so App.tsx's handleMouseEvent is stateless — dispatchHover diffs
   // against this set and mutates it in place.
@@ -1342,6 +1362,7 @@ export default class Ink {
    * screen-matched diff, with repaint as the resize fallback.
    */
   setAltScreenActive(active: boolean, mouseTracking = false): void {
+    if (!active) this.stopDragScroll();
     if (this.altScreenActive === active) return;
     const resetOldPointerContext = (): void => {
       // Fire leave handlers before dropping the set — a bare clear strands
@@ -2298,6 +2319,10 @@ export default class Ink {
     return () => this.selectionListeners.delete(cb);
   }
   private notifySelectionChange(): void {
+    // A settled/cleared selection has no drag to follow: release arrives here
+    // through App's onSelectionChange after finishSelection cleared
+    // isDragging. Keep the driver alive only for a live drag.
+    if (!this.selection.isDragging) this.stopDragScroll();
     this.renderNow();
     // #185 self-heal: selection listeners drive React state; an overflow
     // throw resets React's nested counter, so absorb and keep the rest.
@@ -2538,6 +2563,72 @@ export default class Ink {
       updateSelection(sel, col, row);
     }
     this.notifySelectionChange();
+    this.updateDragScroll(row);
+  }
+
+  /**
+   * Keep the selection drag scrolling while the pointer sits at (or past) a
+   * viewport edge. The scroll container is resolved from the selection
+   * ANCHOR, not the pointer: dragging down into the footer/composer puts the
+   * pointer outside the transcript box, and the box must keep scrolling for
+   * the gesture to work — the same reason a native terminal keeps scrolling
+   * once the drag leaves the text area. The synthetic wheel is dispatched at
+   * a row INSIDE that box so position routing lands on it.
+   *
+   * A direction change restarts the timer (drag crossing from the bottom
+   * edge to the top); moving back inside the viewport, releasing, or leaving
+   * alt-screen stops it.
+   */
+  private updateDragScroll(row: number): void {
+    const anchor = this.selection.anchor;
+    const node = anchor ? findScrollNode(this.rootNode, anchor.col, anchor.row) : null;
+    const top = node?.scrollViewportTop;
+    const height = node?.scrollViewportHeight;
+    if (!anchor || !node || top === undefined || height === undefined || height <= 0) {
+      this.stopDragScroll();
+      return;
+    }
+    const bottom = top + height - 1;
+    const dir = row >= bottom ? 1 : row <= top ? -1 : 0;
+    if (dir === 0) {
+      this.stopDragScroll();
+      return;
+    }
+    // Anchor column, not the pointer's: the pointer may sit in a column
+    // outside the box (scrollbar gutter, page margin) while its ROW is what
+    // selects the edge direction; the anchor is always inside the box.
+    const point = { col: anchor.col, row: dir > 0 ? bottom : top };
+    // Same direction and a live timer: just retarget (the box can change
+    // under a moving anchor). A direction flip or a first edge hit (re)starts
+    // the driver — stopDragScroll clears the node, so arm it AFTER the stop.
+    if (this.dragScrollTimer !== null && this.dragScrollDir === dir) {
+      this.dragScrollNode = node;
+      this.dragScrollPoint = point;
+      return;
+    }
+    this.stopDragScroll();
+    this.dragScrollNode = node;
+    this.dragScrollPoint = point;
+    this.dragScrollDir = dir;
+    this.dragScrollTimer = setInterval(() => {
+      // The box can unmount mid-drag (screen switch, new content). A wheel at
+      // the recorded point then simply hits nothing; drop the driver instead
+      // of ticking against a detached node.
+      if (!this.altScreenActive || this.dragScrollNode === null) {
+        this.stopDragScroll();
+        return;
+      }
+      dispatchWheel(this.rootNode, this.dragScrollPoint.col, this.dragScrollPoint.row, this.dragScrollDir, 0, 0);
+    }, DRAG_SCROLL_INTERVAL_MS);
+  }
+
+  private stopDragScroll(): void {
+    if (this.dragScrollTimer !== null) {
+      clearInterval(this.dragScrollTimer);
+      this.dragScrollTimer = null;
+    }
+    this.dragScrollDir = 0;
+    this.dragScrollNode = null;
   }
 
   // Methods to properly suspend stdin for external editor usage
@@ -2675,6 +2766,7 @@ export default class Ink {
     if (this.isUnmounted) {
       return;
     }
+    this.stopDragScroll();
     // The final frame render is best-effort: a mid-state React commit can
     // throw (agent still working at the exact exit moment). It must NOT
     // skip the synchronous cleanup block below — a skipped DISABLE_*

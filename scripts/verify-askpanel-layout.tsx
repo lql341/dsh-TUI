@@ -16,7 +16,7 @@ process.env.FORCE_COLOR = '3'
 // 不 pin 会随宿主 lang.json 或 locale 漂移（en 机器上必挂）。
 process.env.DSH_TUI_LANG = 'zh'
 
-const [{ PassThrough, Writable }, React, { Terminal: XTerm }, { render }, { Chat }, { QuestionStore }, { settle, settled, sleep }] = await Promise.all([
+const [{ PassThrough, Writable }, React, { Terminal: XTerm }, { render, AlternateScreen }, { Chat }, { QuestionStore }, { settle, settled, sleep }] = await Promise.all([
   import('node:stream'),
   import('react'),
   import('@xterm/headless'),
@@ -217,6 +217,63 @@ for (const [name, rows] of [['短会话', shortRows], ['长高录', tallRows]] a
   let shot = ''
   await settled(() => { shot = screen(); return REQUIRED.every(t => shot.includes(t)) })
   check('resize 风暴后（130x42）', shot)
+  app.unmount()
+  // 固定窗:pacing unmount 后输出 flush 无可观测完成条件。
+  await sleep(100)
+}
+
+/**
+ * 场景 5/6（issue #1212 姊妹核查）：问题正文与 detail 都是模型给的弹性正文。
+ * 全屏定高帧（AlternateScreen 写死 height=终端行数）下 alt-screen 没有
+ * scrollback，正文不折叠就会把选项、内联输入与提示行整段挤出可见视口——
+ * 与审批条同一条「决策行掉出屏幕」的路径。80×24 是 issue 的复现尺寸。
+ */
+const FOLD_MARKER = '已折叠'
+const QUESTION_DECISION = ['宅家打游戏/看剧', '自定义回答', '↑/↓ 选择']
+
+const foldingCases: ReadonlyArray<{ name: string; body: string; detail?: string }> = [
+  { name: '长正文', body: 'LONG' },
+  { name: '长 detail', body: '短问题？', detail: 'LONG' },
+]
+
+for (const foldingCase of foldingCases) {
+  const { stdout, stdin, screen } = makeHarness(80, 24)
+  const store = new QuestionStore()
+  const app = await render(
+    React.createElement(AlternateScreen, null,
+      React.createElement(Chat, {
+        channel: makeChannel(shortRows),
+        questionStore: store as never,
+        fullscreen: true,
+        onExit: () => {},
+      })),
+    { stdout, stdin, stderr: stdout, exitOnCtrlC: false, patchConsole: false },
+  )
+  await settle(() => screen().trim().length > 0)
+  const longBody = Array.from({ length: 30 }, (_, i) => `正文第 ${i + 1} 行 ${'z'.repeat(20)}`).join('\n')
+  void store.ask({
+    questions: [{
+      ...EXACT_QUESTION,
+      question: foldingCase.body === 'LONG' ? longBody : foldingCase.body,
+      ...(foldingCase.detail === 'LONG' ? { detail: longBody } : {}),
+    }],
+  } as never)
+  // 断言与等待共用同一快照（settled 返回终值），无等待/断言分叉。
+  let shot = ''
+  const visible = await settled(() => {
+    shot = screen()
+    return shot.includes(FOLD_MARKER)
+      && QUESTION_DECISION.every(t => shot.includes(t))
+      && !shot.includes('正文第 30 行')
+  })
+  const missing = [...QUESTION_DECISION, FOLD_MARKER].filter(t => !shot.includes(t))
+  if (visible) {
+    console.log(`PASS  80x24 全屏${foldingCase.name}折叠（决策行在可见视口）`)
+  } else {
+    failures++
+    console.log(`FAIL  80x24 全屏${foldingCase.name}折叠（决策行在可见视口）— 缺: ${missing.join(' / ')}`)
+    console.log(shot)
+  }
   app.unmount()
   // 固定窗:pacing unmount 后输出 flush 无可观测完成条件。
   await sleep(100)
