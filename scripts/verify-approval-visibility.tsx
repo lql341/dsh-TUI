@@ -83,6 +83,16 @@ const channel = {
   setResumeTarget: () => {},
 } as never
 
+/** 密集底栏：活动行 + 8 条展开待办（截图现场），辅助 chrome 比固定预留高得多。 */
+const denseChannel = {
+  ...(channel as unknown as Record<string, unknown>),
+  working: true,
+  todos: Array.from({ length: 8 }, (_, i) => ({
+    content: `待办事项 ${i + 1}：检查模块边界的渲染行为`,
+    status: i === 0 ? 'in_progress' : 'pending',
+  })),
+} as never
+
 const plainText = (frames: string[]) => frames
   .join('')
   .replace(/\x1b\[(\d+)C/g, (_, n) => ' '.repeat(Number(n)))
@@ -229,6 +239,8 @@ async function viewportWithApproval(opts: {
   command: string
   reason?: string
   inline?: boolean
+  /** Bottom-chrome density variant (default: the plain chat stub). */
+  channel?: unknown
 }): Promise<string[]> {
   const term = new XTerm({ cols: opts.cols, rows: opts.rows, scrollback: 0, allowProposedApi: true })
   class ViewportStdout extends Writable {
@@ -241,7 +253,7 @@ async function viewportWithApproval(opts: {
   }
   const approvals = new ApprovalStore()
   const chat = React.createElement(Chat, {
-    channel,
+    channel: opts.channel ?? channel,
     questionStore: new QuestionStore(),
     approvalStore: approvals,
     fullscreen: opts.inline !== true,
@@ -314,6 +326,21 @@ async function viewportWithApproval(opts: {
 {
   const lines = await viewportWithApproval({ cols: 80, rows: 24, command: longLines(18, 'echo line'), inline: true })
   check('1212 80x24 inline: decision rows visible', decisionRowsVisible(lines))
+}
+
+// 120×27 + dense chrome (working spinner + an 8-row todo list, the reporter's
+// screenshot): the auxiliary chrome above the panel must yield its rows, never
+// the decision surface. The panel's reserve covers ordinary chrome only, so
+// this is what fails if the bottom chrome cannot be squeezed.
+{
+  const lines = await viewportWithApproval({
+    cols: 120,
+    rows: 27,
+    command: longLines(55, 'echo line'),
+    channel: denseChannel,
+  })
+  check('1212 120x27 dense chrome: body folds with a marker', viewportHas(lines, FOLDED_NOTE))
+  check('1212 120x27 dense chrome: decision rows visible', decisionRowsVisible(lines))
 }
 
 if (failures > 0) {

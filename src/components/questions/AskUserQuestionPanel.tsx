@@ -28,6 +28,9 @@
 import React from 'react'
 import { t } from '../../i18n.js'
 import { Box, Text, useInput, useTerminalSize } from '../../ui.js'
+
+/** 面板外的底栏预留（辅助 chrome + 状态行）的默认值。 */
+const CHROME_ROWS = 6
 import { useDeclaredCursor } from '../../ink/hooks/use-declared-cursor.js'
 import { Divider } from '../design-system/Divider.js'
 import { POINTER } from '../../terminal-utils/figures.js'
@@ -92,6 +95,9 @@ export type AskUserQuestionPanelProps = {
   readonly onAnswer: (selection: QuestionSelection) => void
   /** Esc on the first question / Ctrl+C — aborts the whole ask. */
   readonly onCancel: () => void
+  /** Rows consumed outside this panel (auxiliary chrome + the transcript
+   *  floor), measured by Chat. Defaults to the historical fixed reserve. */
+  readonly chromeRows?: number
   /**
    * Esc, when the host wants to decide back-vs-cancel from the live store.
    * A same-batch → then Esc still runs on the panel mounted for question 1,
@@ -146,6 +152,7 @@ export function AskUserQuestionPanel({
   onExpand,
   onToggleFold,
   fullscreen = false,
+  chromeRows,
 }: AskUserQuestionPanelProps): React.ReactNode {
   // Plan-mode's exit_plan_mode ask carries a presentation intent: render
   // the plan decision card instead of the generic questionnaire. The
@@ -266,14 +273,18 @@ export function AskUserQuestionPanel({
   // the option list keeps for its windowed focus. The body — the row the user
   // has to read to answer at all — folds first; the detail takes what is left
   // and keeps its margin plus its marker whenever it has content at all.
-  const elasticRows = Math.max(terminalRows - fixedRows + 1 - 4, 1)
+  // 决策面预算是「终端行数 − 面板外的真实 chrome」：Chat 量出辅助 chrome 与
+  // 状态行后经 chromeRows 传入（默认仍是旧的固定预留）。fixedRows 里已含那份
+  // 固定预留，所以按差额平移终端行数即可。
+  const effectiveRows = terminalRows - ((chromeRows ?? CHROME_ROWS) - CHROME_ROWS)
+  const elasticRows = Math.max(effectiveRows - fixedRows + 1 - 4, 1)
   const detailFloor = detailLines.length === 0 ? 0 : 2
   const bodyView = foldLines(bodyLines, Math.max(elasticRows - detailFloor, 1))
   const bodyRows = Math.max(foldedRows(bodyView), 1)
   const detailView = foldLines(detailLines, Math.max(elasticRows - bodyRows - 1, 0))
   const detailRows = detailView.shown.length === 0 && !detailView.marker ? 0 : foldedRows(detailView) + 1
   const reservedRows = fixedRows - 1 + bodyRows + detailRows
-  const optionBudget = Math.max(terminalRows - reservedRows, 2)
+  const optionBudget = Math.max(effectiveRows - reservedRows, 2)
   const optionHeights = options.map(option => option.description === undefined ? 1 : 2)
   const windowedOptions = optionHeights.reduce((sum, height) => sum + height, 0) > optionBudget
   const optionFocus = Math.min(focusIndex, Math.max(options.length - 1, 0))

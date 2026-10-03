@@ -342,6 +342,13 @@ function peekKey(image: TranscriptImage, title: string | undefined): string {
   return `${title ?? ''} ${image.id}`
 }
 
+/**
+ * 决策面板（审批 / ask_user_question）之外的预算下限：辅助 chrome 的真实高度
+ * 由 Chat 量出后经 `chromeRows` 交给面板，这里再留几行给转录区。chrome 只有
+ * 普通两行（活动行 + 状态行）时 `2 + 4 = 6`，恰好等于面板旧的固定预留。
+ */
+const DECISION_TRANSCRIPT_FLOOR = 4
+
 export function Chat({
   channel,
   questionStore,
@@ -978,6 +985,33 @@ export function Chat({
   const [effortOptions, setEffortOptions] = React.useState<readonly EffortOption[]>([])
   const [themeName, setTheme] = useTheme()
   const { rows: terminalRows } = useTerminalSize()
+  /**
+   * 决策面板的底栏预算：面板不再猜「底栏固定 6 行」，而是量出辅助 chrome
+   * （pill/活动行/待办/回顾/余额/插件状态）与状态行的真实高度再交给它。小窗 +
+   * 展开待办曾把审批选项顶出帧底（issue #1212 后续复现）。随每次 commit 重量，
+   * 等值 setState 是 no-op，自然收敛。
+   */
+  const auxChromeRef = React.useRef<DOMElement | null>(null)
+  const statusChromeRef = React.useRef<DOMElement | null>(null)
+  const [decisionChromeRows, setDecisionChromeRows] = React.useState<number | undefined>(undefined)
+  // 只在真有待决策面板时才测量：没有面板时这份预算无人消费，多余的一次
+  // setState 会白白多渲染一帧（命中测试与输入时序对它敏感）。
+  const decisionPanelPending = questionSnapshot !== null || approvalSnapshot !== null
+  React.useEffect(() => {
+    if (!decisionPanelPending) return
+    // 布局高度可能是 undefined/NaN（整树首帧、未测量的节点）：NaN 与任何值都
+    // 不相等，直接参与比较会让 setState 每帧都触发并卡死渲染循环。
+    const rows = (ref: React.RefObject<DOMElement | null>): number => {
+      const height = ref.current?.yogaNode?.getComputedHeight()
+      return typeof height === 'number' && Number.isFinite(height) ? height : 0
+    }
+    const aux = rows(auxChromeRef)
+    const status = rows(statusChromeRef)
+    // 首帧还没布局：保持 undefined，面板沿用旧的固定预留。
+    if (aux <= 0 && status <= 0) return
+    const next = aux + status + DECISION_TRANSCRIPT_FLOOR
+    setDecisionChromeRows(previous => (previous === next ? previous : next))
+  })
   /**
    * 帮助盖屏（第八版，overlay kind 'help'）的滚动视口：HelpMenu 自带
    * ScrollBox，键盘（↑/↓/PgUp/PgDn/Home/End）由 Chat 的 overlay 分支驱动。
@@ -4836,6 +4870,7 @@ export function Chat({
   const approvalPanelNode = approvalSnapshot !== null ? (
     <ApprovalPanel
       key={approvalSnapshot.key}
+      chromeRows={decisionChromeRows}
       approval={approvalSnapshot}
       background={approvalSnapshot.agentId !== channel.agentId}
       onDecide={outcome => approvals.decide(outcome)}
@@ -4844,6 +4879,7 @@ export function Chat({
   const questionPanelNode = questionSnapshot !== null ? (
     <AskUserQuestionPanel
       key={questionSnapshot.key}
+      chromeRows={decisionChromeRows}
       question={questionSnapshot.question}
       position={questionSnapshot.position}
       total={questionSnapshot.total}
@@ -5926,126 +5962,132 @@ export function Chat({
       </Box>
       {/* Bottom chrome (pill, spinners, dialogs, prompt, statusline): never
           let flex shrink squeeze these fixed-height rows — the ScrollBox
-          above absorbs all overflow (it is the scroll container). */}
+          above absorbs all overflow (it is the scroll container). The decision
+          panels get the MEASURED chrome height instead of a fixed guess. */}
       <Box flexDirection="column" flexShrink={0}>
-        {showPill && (
-          <NewMessagesPill
-            count={unseenCount}
-            onClick={() => handle?.scrollToBottom()}
-          />
-        )}
-        {channel.working &&
-          (activitySlot &&
-          workingActivity !== undefined &&
-          workingActivity.line !== '' &&
-          workingActivity.phase !== 'idle' ? (
-            // The working-activity line replaces the random-verb spinner
-            // while a turn runs: the plugin's live line (thinking copy /
-            // running tool / narration) is the status, with the spinner
-            // slot's token counter preserved as a suffix. Only real activity
-            // data replaces the spinner — before the first event, or with
-            // `activity: false`, the classic spinner still renders. The line
-            // hugs the left edge (no padding) so the self-narration reads as
-            // part of the transcript, aligned with the `❯` prompt below.
-              <Box marginTop={1}>
-                <ActivityLine
-                  activity={workingActivity}
-                  activityFrames={channel.activityFrames}
-                  warnPct={activityWarnPct}
-                  warnDanger={activityWarnPct !== undefined && activityWarnPct >= 95}
-                  // Upload = real tokens of the last request; download =
-                  // the animated chars/4 estimate, matching the classic
-                  // spinner's counter (the suffix used raw chars before,
-                  // inflating the reading next to a real upload number). An
-                  // automatic compaction mid-turn badges THIS line too — it is
-                  // the spinner slot whenever real activity data exists.
-                  suffix={`${lastUploadTokens > 0 ? ` · ↑ ${formatTokens(lastUploadTokens)}` : ''} · ↓ ${formatTokens(Math.round(channel.responseChars / 4))} tokens${compactionBadge === undefined ? '' : ` · ${compactionBadge}`}`}
+        {/* 辅助 chrome（pill/活动行/待办/回顾/余额/插件状态）：作为一个可测量
+            单元整体参与布局，真实高度就是决策面板的预算输入——小窗 + 展开待办
+            曾把审批选项顶出帧底（issue #1212 后续复现）。 */}
+        <Box ref={auxChromeRef} flexDirection="column" flexShrink={0}>
+          {showPill && (
+            <NewMessagesPill
+              count={unseenCount}
+              onClick={() => handle?.scrollToBottom()}
+            />
+          )}
+          {channel.working &&
+            (activitySlot &&
+            workingActivity !== undefined &&
+            workingActivity.line !== '' &&
+            workingActivity.phase !== 'idle' ? (
+              // The working-activity line replaces the random-verb spinner
+              // while a turn runs: the plugin's live line (thinking copy /
+              // running tool / narration) is the status, with the spinner
+              // slot's token counter preserved as a suffix. Only real activity
+              // data replaces the spinner — before the first event, or with
+              // `activity: false`, the classic spinner still renders. The line
+              // hugs the left edge (no padding) so the self-narration reads as
+              // part of the transcript, aligned with the `❯` prompt below.
+                <Box marginTop={1}>
+                  <ActivityLine
+                    activity={workingActivity}
+                    activityFrames={channel.activityFrames}
+                    warnPct={activityWarnPct}
+                    warnDanger={activityWarnPct !== undefined && activityWarnPct >= 95}
+                    // Upload = real tokens of the last request; download =
+                    // the animated chars/4 estimate, matching the classic
+                    // spinner's counter (the suffix used raw chars before,
+                    // inflating the reading next to a real upload number). An
+                    // automatic compaction mid-turn badges THIS line too — it is
+                    // the spinner slot whenever real activity data exists.
+                    suffix={`${lastUploadTokens > 0 ? ` · ↑ ${formatTokens(lastUploadTokens)}` : ''} · ↓ ${formatTokens(Math.round(channel.responseChars / 4))} tokens${compactionBadge === undefined ? '' : ` · ${compactionBadge}`}`}
+                  />
+                </Box>
+              ) : (
+                <WorkingSpinner
+                  mode={channel.spinnerMode}
+                  hasActiveTools={channel.activeToolCount > 0}
+                  responseLengthRef={responseLengthRef}
+                  uploadTokensRef={uploadTokensRef}
+                  loadingStartTimeRef={loadingStartTimeRef}
+                  totalPausedMsRef={totalPausedMsRef}
+                  pauseStartTimeRef={pauseStartTimeRef}
+                  thinkingStatus={thinkingStatus}
+                  suffix={compactionBadge}
                 />
-              </Box>
-            ) : (
-              <WorkingSpinner
-                mode={channel.spinnerMode}
-                hasActiveTools={channel.activeToolCount > 0}
-                responseLengthRef={responseLengthRef}
-                uploadTokensRef={uploadTokensRef}
-                loadingStartTimeRef={loadingStartTimeRef}
-                totalPausedMsRef={totalPausedMsRef}
-                pauseStartTimeRef={pauseStartTimeRef}
-                thinkingStatus={thinkingStatus}
-                suffix={compactionBadge}
-              />
-            ))}
-        {!channel.working && channel.compaction !== undefined && (
-          // Manual `/compact` runs while the session is idle: the row takes the
-          // spinner slot so the screen never looks frozen for its ~25-70s.
-          <CompactionStatusRow
-            compaction={channel.compaction}
-            activityPreset={activitySlot ? channel.activityFrames : undefined}
-          />
-        )}
-        {/* 分栏且 todo Panel 已启用时，Goal/Todo 由右栏 Panel 承载，
-            底部 chrome 不再挂载（窄屏 / inline / 未启用时保留现状）。 */}
-        {!(sidePanel.split && sidePanel.enabledPanelIds.includes('todo')) && (
-          <GoalTodoPanel
-            channel={channel}
-            collapsed={todoCollapsed}
-            onToggle={() => setTodoCollapsed(previous => !previous)}
-          />
-        )}
-        {recap !== null && recap.auto && !recap.expanded && (
-          <AutoRecapRow
-            summary={recap.summary}
-            streaming={!recap.done}
-            onExpand={() => setRecap(prev => (prev ? { ...prev, expanded: true } : prev))}
-            onDismiss={() => closeRecap()}
-          />
-        )}
-        {balance !== null && (
-          <BalanceReportRow
-            result={balance.result}
-            refreshing={balance.refreshing}
-            tokens={channel.tokens}
-            model={channel.model}
-            provider={channel.provider}
-            mainCost={channel.mainCost}
-            subagentCost={channel.subagentCost}
-            onRefresh={runBalance}
-            onDismiss={() => setBalance(null)}
-          />
-        )}
-        {statusEntries.length > 0 && (
-          // Plugin status contributions (tuiStatus seam): one joined line,
-          // truncated by the Text wrap contract — the host owns the layout,
-          // plugins own only their text.
-          <Text dimColor wrap="truncate">
-            {statusEntries.map(entry => entry.text).join(' · ')}
-          </Text>
-        )}
-        {activePreview === null && statusViews.map(view => (
-          <PluginStatusViewBoundary
-            key={`${view.key}:${view.registrationId}`}
-            viewKey={view.key}
-            onError={(key, error) => statusContributions.reportViewError(key, error)}
-          >
-            <Box
-              flexDirection="column"
-              flexShrink={0}
-              maxHeight={view.maxRows}
-              overflow="hidden"
+              ))}
+          {!channel.working && channel.compaction !== undefined && (
+            // Manual `/compact` runs while the session is idle: the row takes the
+            // spinner slot so the screen never looks frozen for its ~25-70s.
+            <CompactionStatusRow
+              compaction={channel.compaction}
+              activityPreset={activitySlot ? channel.activityFrames : undefined}
+            />
+          )}
+          {/* 分栏且 todo Panel 已启用时，Goal/Todo 由右栏 Panel 承载，
+              底部 chrome 不再挂载（窄屏 / inline / 未启用时保留现状）。 */}
+          {!(sidePanel.split && sidePanel.enabledPanelIds.includes('todo')) && (
+            <GoalTodoPanel
+              channel={channel}
+              collapsed={todoCollapsed}
+              onToggle={() => setTodoCollapsed(previous => !previous)}
+            />
+          )}
+          {recap !== null && recap.auto && !recap.expanded && (
+            <AutoRecapRow
+              summary={recap.summary}
+              streaming={!recap.done}
+              onExpand={() => setRecap(prev => (prev ? { ...prev, expanded: true } : prev))}
+              onDismiss={() => closeRecap()}
+            />
+          )}
+          {balance !== null && (
+            <BalanceReportRow
+              result={balance.result}
+              refreshing={balance.refreshing}
+              tokens={channel.tokens}
+              model={channel.model}
+              provider={channel.provider}
+              mainCost={channel.mainCost}
+              subagentCost={channel.subagentCost}
+              onRefresh={runBalance}
+              onDismiss={() => setBalance(null)}
+            />
+          )}
+          {statusEntries.length > 0 && (
+            // Plugin status contributions (tuiStatus seam): one joined line,
+            // truncated by the Text wrap contract — the host owns the layout,
+            // plugins own only their text.
+            <Text dimColor wrap="truncate">
+              {statusEntries.map(entry => entry.text).join(' · ')}
+            </Text>
+          )}
+          {activePreview === null && statusViews.map(view => (
+            <PluginStatusViewBoundary
+              key={`${view.key}:${view.registrationId}`}
+              viewKey={view.key}
+              onError={(key, error) => statusContributions.reportViewError(key, error)}
             >
-              <Box flexDirection="column" flexShrink={0}>
-                {React.createElement(view.component, {
-                  React,
-                  ui: STATUS_VIEW_UI,
-                })}
+              <Box
+                flexDirection="column"
+                flexShrink={0}
+                maxHeight={view.maxRows}
+                overflow="hidden"
+              >
+                <Box flexDirection="column" flexShrink={0}>
+                  {React.createElement(view.component, {
+                    React,
+                    ui: STATUS_VIEW_UI,
+                  })}
+                </Box>
               </Box>
-            </Box>
-          </PluginStatusViewBoundary>
-        ))}
-        {/* 输入簇：可替换输入行链 + 状态行 + 瞬态浮层。浮层锚点收窄到本簇
-            顶边（= 输入行顶边），picker 紧贴输入框向上展开，盖住其上
-            todo/spinner/转录尾部行（用户接受的取舍），自身零布局高度、
-            不推动帧布局。 */}
+            </PluginStatusViewBoundary>
+          ))}
+          {/* 输入簇：可替换输入行链 + 状态行 + 瞬态浮层。浮层锚点收窄到本簇
+              顶边（= 输入行顶边），picker 紧贴输入框向上展开，盖住其上
+              todo/spinner/转录尾部行（用户接受的取舍），自身零布局高度、
+              不推动帧布局。 */}
+        </Box>
         <Box flexDirection="column" flexShrink={0}>
         {approvalPanelNode !== null ? (
           approvalPanelNode
@@ -6151,23 +6193,25 @@ export function Chat({
           caretPreviewOpen={peekPreview !== null}
           onDismissCaretPreview={dismissPeek}
         />
-        <StatusLine
-          channel={channel}
-          activity={workingActivity}
-          selectionActive={selectionActive}
-          helpOpen={helpOpen}
-          wake={
-            wakeBand === undefined
-              ? undefined
-              : {
-                  band: wakeBand,
-                  hint: trajectorySeen ? undefined : primaryComboString('trajectory'),
-                  tick: Math.floor(wakeTime / 120),
-                  onOpen: openScene,
-                  hoverHint: primaryComboString('trajectory'),
-                }
-          }
-        />
+        <Box ref={statusChromeRef} flexDirection="column" flexShrink={0}>
+          <StatusLine
+            channel={channel}
+            activity={workingActivity}
+            selectionActive={selectionActive}
+            helpOpen={helpOpen}
+            wake={
+              wakeBand === undefined
+                ? undefined
+                : {
+                    band: wakeBand,
+                    hint: trajectorySeen ? undefined : primaryComboString('trajectory'),
+                    tick: Math.floor(wakeTime / 120),
+                    onOpen: openScene,
+                    hoverHint: primaryComboString('trajectory'),
+                  }
+            }
+          />
+        </Box>
         {/* 瞬态面板浮层：absolute + bottom:'100%' 钉在输入簇 Box 顶边（=
             输入行顶边），紧贴输入框向上覆盖其上 todo/spinner/转录尾部行，
             自身零布局高度。in-flow 挂载会让帧高随面板开关涨落，把帧顶行滚进

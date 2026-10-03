@@ -37,6 +37,10 @@ export type ApprovalPanelProps = {
    *  (agent view) session's ask, answered from the same single panel. */
   readonly background?: boolean
   readonly onDecide: (outcome: 'allowed-once' | 'rejected') => void
+  /** Rows consumed outside this panel (auxiliary chrome + the transcript
+   *  floor), measured by Chat. Defaults to the historical fixed reserve so
+   *  embedders keep the old budget. */
+  readonly chromeRows?: number
 }
 
 const OUTCOMES = ['allowed-once', 'rejected'] as const
@@ -58,7 +62,7 @@ const DECISION_ROWS = 5
 /** Cosmetic spacing rows: root/inner/options/hint margins + the focus spacer. */
 const SPACING_ROWS = 5
 
-export function ApprovalPanel({ approval, background = false, onDecide }: ApprovalPanelProps): React.ReactNode {
+export function ApprovalPanel({ approval, background = false, onDecide, chromeRows }: ApprovalPanelProps): React.ReactNode {
   const [focusIndex, setFocusIndex] = React.useState(0)
   // Hover highlight per decision row (mouse affordance; the click handler
   // below mirrors the keyboard Enter on the focused row).
@@ -92,7 +96,7 @@ export function ApprovalPanel({ approval, background = false, onDecide }: Approv
   // Charge rows in priority order: decision surface, optional rows, cosmetic
   // spacing, then the elastic command/reason body.
   const reserved = DECISION_ROWS + (background ? 1 : 0)
-  const panelBudget = Math.max(terminalRows - CHROME_ROWS, reserved)
+  const panelBudget = Math.max(terminalRows - (chromeRows ?? CHROME_ROWS), reserved)
   let spacing = SPACING_ROWS
   let textBudget = panelBudget - reserved - spacing
   if (textBudget < 0) {
